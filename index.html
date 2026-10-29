@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HelloWorld 合約測試</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js" type="application/javascript"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; padding: 0 16px; line-height: 1.6; }
+        h1, h2 { text-align: center; }
+        .container { border: 1px solid #ccc; padding: 20px; border-radius: 8px; }
+        button, input { padding: 10px; margin-top: 10px; width: 100%; box-sizing: border-box; }
+        pre { background-color: #f4f4f4; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
+        #output { max-height: 250px; overflow-y: auto; }
+        .note { color: gray; font-size: 0.9em; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <h1>HelloWorld 合約測試</h1>
+    <div class="container">
+        <p>這是一個簡單的網頁，用於測試已部署在 Sepolia 網路上的 HelloWorld 合約。</p>
+        <hr>
+
+        <h2>當前訊息</h2>
+        <button id="connectBtn">連接 MetaMask</button>
+        <pre id="messageOutput">尚未讀取訊息，請先連接錢包。</pre>
+
+        <hr>
+
+        <h2>更新訊息</h2>
+        <input type="text" id="newMessageInput" placeholder="輸入新的訊息..." />
+        <button id="updateBtn" disabled>更新訊息</button>
+        <div class="note">⚠️ 此操作會發送一筆交易，需要支付 Sepolia 測試網的 Gas 費用。</div>
+
+        <hr>
+
+        <h2>交易日誌</h2>
+        <pre id="output"></pre>
+    </div>
+
+    <script>
+        // 合約地址與 ABI
+        const CONTRACT_ADDRESS = "0xcDA0cE6635b1b3f5b90C2F36b2e274890bf1DAc8";
+        const CONTRACT_ABI = [
+            { "inputs": [], "name": "message", "outputs": [{ "internalType": "string", "name": "", "type": "string" }], "stateMutability": "view", "type": "function" },
+            { "inputs": [{ "internalType": "string", "name": "_newMessage", "type": "string" }], "name": "updateMessage", "outputs": [], "stateMutability": "nonpayable", "type": "function" }
+        ];
+
+        // Sepolia 測試網 chainId (十進位 11155111)
+        const SEPOLIA_CHAIN_ID = "0xaa36a7";
+
+        // DOM 元素
+        const connectBtn = document.getElementById("connectBtn");
+        const updateBtn = document.getElementById("updateBtn");
+        const messageOutput = document.getElementById("messageOutput");
+        const newMessageInput = document.getElementById("newMessageInput");
+        const output = document.getElementById("output");
+
+        // Ethers 相關變數（全部明確宣告）
+        let provider, signer, contract, readOnlyContract;
+
+        // 顯示日誌訊息
+        function log(message) {
+            output.textContent += `${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // 確認錢包在 Sepolia，不是的話請求切換
+        async function ensureSepolia() {
+            const chainId = await window.ethereum.request({ method: "eth_chainId" });
+            if (chainId === SEPOLIA_CHAIN_ID) return;
+
+            log("目前不在 Sepolia 測試網，正在請求切換...");
+            try {
+                await window.ethereum.request({
+                    method: "wallet_switchEthereumChain",
+                    params: [{ chainId: SEPOLIA_CHAIN_ID }]
+                });
+            } catch (error) {
+                // 4902：錢包裡沒有這條鏈
+                if (error.code === 4902) {
+                    throw new Error("你的錢包尚未加入 Sepolia 測試網，請先在 MetaMask 開啟「顯示測試網路」。");
+                }
+                throw new Error("需要切換到 Sepolia 測試網才能使用。");
+            }
+        }
+
+        // 建立 provider / signer / 合約實例
+        async function setupContracts() {
+            provider = new ethers.BrowserProvider(window.ethereum);
+            signer = await provider.getSigner();
+            contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+            readOnlyContract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
+            log(`錢包地址: ${await signer.getAddress()}`);
+        }
+
+        // 連接 MetaMask
+        async function connectWallet() {
+            try {
+                if (!window.ethereum) {
+                    log("錯誤: 請安裝 MetaMask 或其他支援 EIP-1193 的錢包。");
+                    return;
+                }
+
+                log("正在請求連接 MetaMask...");
+                await window.ethereum.request({ method: "eth_requestAccounts" });
+                await ensureSepolia();
+                await setupContracts();
+
+                log("成功連接！");
+                connectBtn.textContent = "已連接";
+                connectBtn.disabled = true;
+                updateBtn.disabled = false;
+
+                await getMessage();
+            } catch (error) {
+                log(`連接失敗: ${error.message}`);
+            }
+        }
+
+        // 讀取合約訊息
+        async function getMessage() {
+            try {
+                const message = await readOnlyContract.message();
+                messageOutput.textContent = `"${message}"`;
+                log("成功讀取當前訊息。");
+            } catch (error) {
+                log(`讀取訊息失敗: ${error.message}`);
+            }
+        }
+
+        // 更新合約訊息
+        async function updateMessage() {
+            const newMessage = newMessageInput.value.trim();
+            if (!newMessage) {
+                log("請輸入要更新的訊息。");
+                return;
+            }
+
+            updateBtn.disabled = true; // 防止連點送出多筆交易
+            try {
+                await ensureSepolia();
+                log(`正在發送交易，將訊息更新為: "${newMessage}"`);
+
+                const tx = await contract.updateMessage(newMessage);
+                log(`交易 Hash: ${tx.hash}`);
+                log(`可在 Etherscan 查看: https://sepolia.etherscan.io/tx/${tx.hash}`);
+
+                log("等待交易確認...");
+                await tx.wait();
+                log("✅ 交易確認完畢！");
+                newMessageInput.value = "";
+
+                await getMessage();
+            } catch (error) {
+                // 使用者在 MetaMask 按拒絕
+                if (error.code === "ACTION_REJECTED") {
+                    log("你已取消這筆交易。");
+                } else {
+                    log(`交易失敗: ${error.shortMessage || error.message}`);
+                }
+            } finally {
+                updateBtn.disabled = false;
+            }
+        }
+
+        // 監聽錢包的帳號 / 網路變動
+        if (window.ethereum) {
+            window.ethereum.on("accountsChanged", async (accounts) => {
+                if (accounts.length === 0) {
+                    log("錢包已中斷連接。");
+                    connectBtn.textContent = "連接 MetaMask";
+                    connectBtn.disabled = false;
+                    updateBtn.disabled = true;
+                    return;
+                }
+                if (!contract) return; // 尚未連接過就不處理
+                log("偵測到帳號切換，重新建立連線...");
+                await setupContracts();
+            });
+
+            window.ethereum.on("chainChanged", () => {
+                // ethers 官方建議：鏈變動時直接重新整理頁面
+                window.location.reload();
+            });
+        }
+
+        connectBtn.addEventListener("click", connectWallet);
+        updateBtn.addEventListener("click", updateMessage);
+
+        log("請點擊『連接 MetaMask』按鈕，開始測試。");
+    </script>
+</body>
+</html>
